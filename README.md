@@ -21,8 +21,8 @@ bun run remotion:still src/stages/h-render/index.ts MasterVideo out/still.png --
 - `src/stages/{a..k}-*/` — one directory per pipeline stage, lettered to match `BUILD_PLAN.md` section 3's architecture diagram. Most are stubs (`throw new Error("TODO Week N: ...")`) pointing at the exact week/section to implement them — this is a real, typechecked, tested scaffold, not a finished pipeline.
 - `src/lib/jev.ts` — typed Jev (TypeSafe AI) client. Score/Choice/Noul gates only; Jev never generates content in this codebase.
 - `src/orchestration/` — Inngest workflow + the idempotency cache every paid call must go through.
-- `test/edl.contract.test.ts` — grow this file first whenever a bug turns out to be an EDL-shape problem, which `BUILD_PLAN.md` section 10 notes is the most common failure class here.
+- `test/edl.contract.test.ts` / `test/normalize.contract.test.ts` — grow these first whenever a bug turns out to be an EDL-shape or normalization problem, which `BUILD_PLAN.md` section 10 notes is the most common failure class here.
 
 ## Status
 
-Week 1 of the `BUILD_PLAN.md` roadmap: EDL schema + contract tests pass, hello-world Remotion composition renders end-to-end (`bun test` and `bunx tsc --noEmit` are both clean). Everything past that is stubbed per stage, ready to build in the order `BUILD_PLAN.md` section 9 lays out.
+Weeks 1–2 of the `BUILD_PLAN.md` roadmap are done: EDL schema + contract tests pass, the asset normalization CLI (`bun run normalize -- <video|audio> <in> <out>`) is verified against real ffmpeg-generated fixtures, and both the Remotion concurrency benchmark and a real 3-minute/5,400-frame render soak test have been run on real hardware with results recorded in `BUILD_PLAN.md` section 5.9 (`bun test` and `bunx tsc --noEmit` are both clean). Still open from Week 1: the YouTube API compliance audit application — that one needs a human on the Google Cloud console, not something this repo can automate. Everything past Week 2 is stubbed per stage, ready to build in the order `BUILD_PLAN.md` section 9 lays out.

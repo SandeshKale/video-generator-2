@@ -1,8 +1,13 @@
 /** Thin wrapper around Bun.spawn for ffmpeg/ffprobe -- no fluent-ffmpeg
  * dependency needed, Bun's own spawn covers everything this pipeline uses. */
 
-export async function runFfmpeg(args: string[]): Promise<void> {
-  const proc = Bun.spawn(["ffmpeg", "-y", ...args], { stdout: "inherit", stderr: "inherit" });
+/** `-loglevel error` by default -- ffmpeg's normal stderr output (codec
+ * banners, per-frame progress) drowns out real errors and floods test/CI
+ * logs. Pass `verbose: true` when you actually want to see progress
+ * (e.g. a long soak-test render run by hand). */
+export async function runFfmpeg(args: string[], opts: { verbose?: boolean } = {}): Promise<void> {
+  const logArgs = opts.verbose ? [] : ["-loglevel", "error"];
+  const proc = Bun.spawn(["ffmpeg", "-y", ...logArgs, ...args], { stdout: "inherit", stderr: "inherit" });
   const code = await proc.exited;
   if (code !== 0) throw new Error(`ffmpeg exited ${code}: ffmpeg ${args.join(" ")}`);
 }

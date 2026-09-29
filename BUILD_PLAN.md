@@ -117,6 +117,18 @@ Order: voice stem (CBR WAV) → music bed trimmed to `voiceDuration + 1.5s` fade
 ### 5.9 Render (`h-render/*`)
 `MasterVideo` consumes `edl.audio.masterUri` as a single pre-mastered file via `<Audio>` — **never re-mix stems inside Chromium**. One `<Sequence>` per `edl.visuals[]` entry. `PIPELINE_FPS = 30` (`src/edl/schema.ts`) is a hard pipeline-wide constant — confirmed via an independent Jev `Choice` call (92% probability) that 30fps is right for this content's diagram/kinetic-type/Ken-Burns motion language; 60fps (used by the `video-generator` repo's 9:16 pipeline for punchy short-form entrances) would double render cost/RAM for motion that doesn't benefit from it here. Benchmark real hardware (`bun run remotion:benchmark`) before touching concurrency settings — Remotion's own documented plateau (GitHub #4949, #4300) is hardware/workload-dependent, tested at up to 224 cores; **do not** default to "render every frame individually and stitch with ffmpeg" preemptively (confirmed premature by an independent Jev `Noul` call at 0.94 confidence) — that's a Week-5+ fallback only if a real soak test on target hardware shows the plateau actually bites at this pipeline's scale.
 
+**Week 2 benchmark results (this sandbox's build hardware: 4 vCPU / 15GB RAM), measured, not estimated** — `bunx remotion benchmark src/stages/h-render/index.ts MasterVideo --concurrencies=1,2,4 --runs=1` against the 10s/300-frame `MasterVideo` fixture composition:
+
+| Concurrency | Wall time | Speedup vs. concurrency=1 |
+|---|---|---|
+| 1 | 26.17s | 1.00× |
+| 2 | 16.51s | 1.59× |
+| 4 | 12.11s | 2.16× |
+
+Scaling is sub-linear (as expected — headless Chromium startup and IPC overhead don't parallelize) but monotonically improving through 4 concurrent workers, with **no plateau or regression** at this core count — consistent with the plan's expectation that the documented #4949/#4300 plateau is a very-high-core-count phenomenon (tested there at up to 224 cores), not something a modest single-creator box hits. **Action: default to `--concurrency=4` (or omit the flag and let Remotion auto-detect) on hardware in this class; re-run this exact benchmark command on the actual production box before deploying to different hardware, and only investigate `enableMultiProcessOnLinux` / frame-by-frame fallback strategies if a real re-run there shows a plateau.**
+
+**3-minute soak test, measured**: `bunx remotion render src/stages/h-render/index.ts SoakTest3Min out.mp4 --concurrency=4` — a real 5,400-frame (180s) render — completed in **192s wall clock**, no crashes, no errors, no memory issues on this hardware. Output verified via `ffprobe` to be exactly 180.000000s at 1920×1080, 30fps, h264 — matching the pipeline's contract precisely (`test/normalize.contract.test.ts` verifies the same specs for normalized *inputs*; this is the corresponding proof on the render *output*). This clears the Week 2 gate to start building real `GraphicScene` components (Week 5) without first worrying about render-engine reliability at this scale.
+
 ### 5.10 QA (`i-qa/qa.ts`)
 Hard fail (no model, checked first): resolution/fps/audio-rate via ffprobe, duration delta <250ms vs. mastered audio, integrated LUFS in [−16, −13], every cue resolved, no disallowed license in the ledger. Soft fail (Jev, then human if low confidence): sampled-still descriptions ("not glitched, text not clipped"). Human (v1, non-optional): packaging pick, three preflight stills, first public video of any new graphic component.
 
@@ -185,8 +197,8 @@ Do not plan a volume target that only makes sense to "amortize Remotion" — tha
 
 | Weeks | Milestone |
 |---|---|
-| 1 | `bun install`, EDL schema + contract tests (done — this scaffold), Remotion hello-world render (done), **submit the YouTube API compliance audit application** (has no SLA — start it now, don't wait) |
-| 2 | Normalization CLI + `remotion:benchmark` on real target hardware + a 3-minute render soak test |
+| 1 | `bun install`, EDL schema + contract tests (**done**), Remotion hello-world render (**done**), **submit the YouTube API compliance audit application** (has no SLA — start it now; not automatable, needs a human on the Google Cloud console — still open) |
+| 2 | **Done.** Normalization CLI (`bun run normalize -- <video\|audio> <in> <out>`, `src/stages/e-normalize-mix/normalize.ts`) + a real contract test against ffmpeg-generated fixtures (`test/normalize.contract.test.ts`, verifies actual ffprobe output, not just that the code compiles) + `remotion:benchmark` run on real hardware + a real 3-minute/5,400-frame render soak test, both with measured results written into section 5.9 above |
 | 3 | ElevenLabs + word grouping + SRT writer + Freesound allowlist + sidechain duck + loudnorm |
 | 4 | Music ledger (Audio Library) + Pexels/Pixabay cache + hash dedupe + Flux thumbnail pipeline |
 | 5 | 2–3 real `GraphicScene` components (replace the placeholder) + Ken Burns on normalized stills |
