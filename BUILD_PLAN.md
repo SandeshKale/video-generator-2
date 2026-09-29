@@ -18,7 +18,7 @@
 6. **Audio is the clock.** `durationInFrames` is always `computeDurationInFrames(masterAudioDurationSec, tailPadFrames)` (`src/edl/schema.ts`) — never a guessed "8–10 minutes." `src/stages/f-bind-edl/bind.ts` enforces this.
 7. **One EDL, many consumers.** `src/edl/schema.ts` is the only object that crosses stage boundaries. Prompts, tags, and ad-hoc filenames are not the contract — if a new piece of state needs to pass between two stages, it goes in the EDL schema (bump `schema` to `v2`+ on any breaking change), not a side-channel file.
 8. **Normalize once, render many.** Raw stock/TTS/SFX/music never reach Remotion directly. `src/stages/e-normalize-mix/normalize.ts` transcodes everything to 1920×1080 CFR H.264 (video) / 48kHz 16-bit PCM WAV (audio) first.
-9. **Idempotent and content-addressed.** Every paid call is wrapped in `withCache({videoId, step, inputHash}, fn)` (`src/orchestration/jobstate/cache.ts`). A retry replays from cache; it never re-bills ElevenLabs/Flux/Claude/Jev.
+9. **Idempotent and content-addressed.** Every paid call is wrapped in `withCache({videoId, step, inputHash}, fn)` (`src/orchestration/jobstate/cache.ts`). A retry replays from cache; it never re-bills Flux/Claude/Jev/the voice provider (or, for the self-hosted `voicebox` provider, never re-runs a compute-heavy synthesis+alignment pass).
 10. **Transform or reject.** If a video would be "TTS over stock with a LUT," kill it before it renders. §2.
 11. **Deterministic checks first, Jev second, human last.** `src/stages/i-qa/qa.ts`'s hard-fail suite (ffprobe/loudnorm/duration/license-ledger — zero models) always runs before any Jev soft-fail check, which always runs before a human is asked to look at anything.
 12. **Facts have provenance.** Every scripted claim is `FACT`/`STAGE`/`GAP` (`src/edl/schema.ts` `ProvenanceSchema`). `assertNoVoicedGaps()` is a hard build-time assertion, not a linter suggestion.
@@ -53,7 +53,7 @@ D. PARALLEL ASSET BUILD       src/stages/d-assets/{tts,sfx,broll,stills,music}.t
         ▼
 E. NORMALIZE + MIX            src/stages/e-normalize-mix/{normalize,duck-and-master,captions}.ts
         │  1920x1080 CFR H.264 | 48kHz PCM WAV | sidechain duck | loudnorm -14 LUFS
-        │  word-level captions from ElevenLabs character alignment
+        │  word-level captions from whichever voice provider ran (§5.4)
         ▼
 F. BIND EDL                   src/stages/f-bind-edl/bind.ts
         │  durationInFrames = f(masterAudioDurationSec); provenance + cue + identity asserts
@@ -99,8 +99,14 @@ Ingest a brief: working title, audience, 5–15 sources, claims the creator will
 ### 5.3 Script (`c-script/script.ts`)
 Chunked generation (outline → hook → per-chapter → payoff → global consistency pass) reduces hallucinated/generic cue tags versus one giant prompt. `verifyCuesMatchSentences()` runs a Jev `Noul` per cue. Chapters are plain `0:00`-prefixed lines in the YouTube description (`ChapterSchema` — confirmed there is no separate chapters API object).
 
-### 5.4 Voice (`d-assets/tts.ts` + `e-normalize-mix/captions.ts`)
-ElevenLabs `.../with-timestamps` (non-websocket — full script known upfront, streaming only adds latency). Alignment is **character-level only**; `groupCharsIntoWords()` groups it and drops `[audio-tag]` characters (v3's `[whispers]`-style directives). Assert `sum(word durations) ≈ audio duration` within 250ms (`assertCaptionCoverage`) — on failure, fall back to a WhisperX pass rather than shipping drifting captions. Always CBR WAV (`normalizeAudioToCbrWav`) — VBR MP3 into Remotion is a documented audio-drift failure mode. Azure TTS (native `WordBoundary` events) is the fallback when word-level timestamp reliability matters more than v3's audio-tag expressiveness.
+### 5.4 Voice (`d-assets/tts.ts` + `lib/whisperx.ts` + `e-normalize-mix/captions.ts`)
+Pluggable provider, `VOICE_PROVIDER` env var, three options behind one `synthesizeVoice()` call returning the same `{ audioPath, words }` shape regardless of which ran:
+
+- **`voicebox` (default, $0 marginal cost)** — self-hosted **Chatterbox** (Resemble AI, MIT) via **Voicebox** (`github.com/jamiepine/voicebox`, MIT, 56k★), REST API at `VOICEBOX_BASE_URL` (default `http://127.0.0.1:17493`). Resemble's own (self-reported, not independently verified here) blind-eval claim: 63.75% of evaluators preferred Chatterbox over ElevenLabs. Chatterbox has no confirmed native word-timestamp output, so every synthesis is run through `alignWithWhisperX()` (`src/lib/whisperx.ts`, a subprocess wrapper around the Python `whisperx` forced-alignment tool) rather than trusted to return usable alignment on its own. The real cost here isn't dollars, it's **operational**: you now own an inference server — a multi-GB model download, container uptime, and compute contention with the Remotion render step on the same box — none of which a hosted API requires. **Not yet run end-to-end**: this dev sandbox has no GPU and no provisioned Voicebox/WhisperX install, so the request/response shapes in `tts.ts`/`whisperx.ts` are built from each project's documented endpoints, not a captured live response — verify against a real running instance before trusting them.
+- **`azure` (fallback)** — native `WordBoundary` events (`AudioOffset`/`WordOffset`), no alignment pass needed at all. Switch to this if Voicebox/Chatterbox's self-hosted reliability or quality doesn't hold up in practice — it needs no self-hosting and is still far cheaper than ElevenLabs (~$0.15–0.20 for a 10-minute script vs. ElevenLabs' ~$0.45–0.90).
+- **`elevenlabs` (optional upgrade, ~$0.45–0.90/video)** — `eleven_v3`'s inline audio-tag expressiveness (`[whispers]`, `[excited]`, etc). Alignment is **character-level only**; `groupCharsIntoWords()` (`e-normalize-mix/captions.ts`) groups it and drops the `[audio-tag]` characters themselves out of the caption stream.
+
+Whichever provider ran, assert `sum(word durations) ≈ audio duration` within 250ms (`assertCaptionCoverage`) before trusting the words for captions — on failure, fall back to (or, for `voicebox`, already ran) a WhisperX pass rather than shipping drifting captions. Always CBR WAV (`normalizeAudioToCbrWav`) immediately after synthesis, for every provider — VBR MP3 into Remotion is a documented audio-drift failure mode.
 
 ### 5.5 SFX (`d-assets/sfx.ts`)
 Freesound's current unified `GET /apiv2/search/` (the `/search/text/` path is deprecated, Nov 2025). `isFreesoundLicenseSafe()` hard-excludes CC-BY-NC before download — monetized YouTube is commercial use. Prefer the `CURATED_ALLOWLIST` per category over live keyword search; generic-keyword result quality is documented as inconsistent.
@@ -146,8 +152,9 @@ v2 priority, not a launch blocker. Pull retention curve 48–72h post-publish, s
 |---|---|---|
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | script, packaging concepts, provenance drafting | per-token, negligible per video |
 | `JEV_API_KEY` | `src/lib/jev.ts` — Score/Choice/Noul gates only | $0.042/M input tokens |
-| `ELEVENLABS_API_KEY` | `d-assets/tts.ts` | ~$0.05–0.10/1k chars |
+| `VOICE_PROVIDER` / `VOICEBOX_BASE_URL` | `d-assets/tts.ts` — primary voice, self-hosted Chatterbox via Voicebox | $0 (your own compute) |
 | `AZURE_SPEECH_KEY`/`REGION` | TTS fallback | ~$16–22/1M chars |
+| `ELEVENLABS_API_KEY` | TTS optional upgrade (`eleven_v3` audio tags) | ~$0.05–0.10/1k chars |
 | `FREESOUND_API_KEY` | `d-assets/sfx.ts` | free, rate-limited |
 | `PEXELS_API_KEY` / `PIXABAY_API_KEY` | `d-assets/broll.ts` | free, rate-limited |
 | `FAL_KEY` | `d-assets/stills.ts` | $0.025–0.04/megapixel |
@@ -165,14 +172,17 @@ v2 priority, not a launch blocker. Pull retention curve 48–72h post-publish, s
 | Item | Estimate |
 |---|---|
 | LLM script + packaging | ~$0.02–0.08 |
-| ElevenLabs (~9k chars) | ~$0.45–0.90 |
+| Voice — `voicebox` (default) | $0 marginal (self-hosted Chatterbox; real cost is the inference server's compute/ops, not a per-video dollar figure) |
+| Voice — `azure` (fallback) | ~$0.15–0.20 |
+| Voice — `elevenlabs` (optional upgrade) | ~$0.45–0.90 |
 | Flux thumbnails + a few stills | ~$0.10–0.40 |
 | Pexels/Pixabay/Freesound | $0 |
 | Music (Audio Library v1) | $0 |
 | Jev gates | <$0.01 |
 | Remotion license | $0 (solo/≤3) |
 | Compute | amortized electricity/box |
-| **Total** | **~$0.60–1.50/video** |
+| **Total (default `voicebox` provider)** | **~$0.15–0.50/video** |
+| **Total (with `elevenlabs` upgrade)** | **~$0.60–1.50/video** |
 
 Do not plan a volume target that only makes sense to "amortize Remotion" — that pattern (30 near-identical videos/month against one template) is exactly what the inauthentic-content policy targets.
 
@@ -199,7 +209,7 @@ Do not plan a volume target that only makes sense to "amortize Remotion" — tha
 |---|---|
 | 1 | `bun install`, EDL schema + contract tests (**done**), Remotion hello-world render (**done**), **submit the YouTube API compliance audit application** (has no SLA — start it now; not automatable, needs a human on the Google Cloud console — still open) |
 | 2 | **Done.** Normalization CLI (`bun run normalize -- <video\|audio> <in> <out>`, `src/stages/e-normalize-mix/normalize.ts`) + a real contract test against ffmpeg-generated fixtures (`test/normalize.contract.test.ts`, verifies actual ffprobe output, not just that the code compiles) + `remotion:benchmark` run on real hardware + a real 3-minute/5,400-frame render soak test, both with measured results written into section 5.9 above |
-| 3 | ElevenLabs + word grouping + SRT writer + Freesound allowlist + sidechain duck + loudnorm |
+| 3 | Voicebox/Chatterbox self-hosting (Docker Compose) + WhisperX forced alignment + Azure fallback + SRT writer + Freesound allowlist + sidechain duck + loudnorm |
 | 4 | Music ledger (Audio Library) + Pexels/Pixabay cache + hash dedupe + Flux thumbnail pipeline |
 | 5 | 2–3 real `GraphicScene` components (replace the placeholder) + Ken Burns on normalized stills |
 | 6 | Chunked script generator + provenance lint + Jev cue/packaging gates |
@@ -219,7 +229,7 @@ Do not plan a volume target that only makes sense to "amortize Remotion" — tha
 - FFmpeg fixtures: ducking + loudnorm on a 30s toy mix, assert the LUFS band.
 - Remotion still fixtures: one checked-in reference PNG per locked `GraphicScene` component, fail CI on pixel-hash drift above a tight threshold.
 - Golden 60s render: rebuilt on every Remotion version bump, compare duration/loudness/three stills.
-- Chaos test: kill the render step mid-way, assert ElevenLabs is not called again on retry (proves the `withCache` idempotency actually works, not just compiles).
+- Chaos test: kill the render step mid-way, assert the voice provider is not called again on retry (proves the `withCache` idempotency actually works, not just compiles).
 
 No test, no "production-ready."
 
