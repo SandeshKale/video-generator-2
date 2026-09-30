@@ -8,15 +8,24 @@
 export type FreesoundLicense = "Creative Commons 0" | "Attribution" | "Attribution Noncommercial";
 
 export function isFreesoundLicenseSafe(license: string): boolean {
-  // Freesound's API returns license as a full URL or name depending on
-  // endpoint version -- normalize before calling this. CC-BY-NC is the
-  // one hard exclusion: monetized YouTube is commercial use.
+  // Confirmed against Freesound's own API docs (freesound.org/docs/api/
+  // resources_apiv2.html): the `license` field on a search result is a
+  // plain string like "Attribution", "Attribution NonCommercial", or
+  // "Creative Commons 0" -- not a URL. CC-BY-NC is the one hard exclusion:
+  // monetized YouTube is commercial use.
   const blocked = ["noncommercial", "nc/", "by-nc"];
   return !blocked.some((b) => license.toLowerCase().includes(b));
 }
 
+/** BUG FOUND AND FIXED 2026-09-30 (caught by a unit test, never actually
+ * exercised in production before this): the old check was
+ * `license.includes("by")`, which is wrong for the exact license-name
+ * strings Freesound's API actually returns -- "attribution".includes("by")
+ * is FALSE (no "by" substring in that spelling), so this silently returned
+ * false -- "does not require attribution" -- for a plain Attribution-
+ * licensed sound, exactly backwards. Check for "attribution" directly. */
 export function requiresAttribution(license: string): boolean {
-  return license.toLowerCase().includes("by") && !license.toLowerCase().includes("cc0");
+  return license.toLowerCase().includes("attribution");
 }
 
 /** Pexels/Pixabay: both ban unaltered standalone resale (not triggered by

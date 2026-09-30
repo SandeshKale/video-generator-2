@@ -5,6 +5,21 @@
  * the already-ducked mix, never before. Tune the ducking threshold against
  * the PRE-loudnorm signal (see the validation doc's additional finding
  * 3.5.3) -- verify with real voice peaks, 0.03 is a starting point only.
+ *
+ * BUG FOUND AND FIXED 2026-09-30 via test/duck-and-master.contract.test.ts:
+ * ffmpeg's sidechaincompress has a fixed, documented input order --
+ * `ffmpeg -h filter=sidechaincompress` says input #0 is "main" (the signal
+ * that gets compressed and appears at the output) and input #1 is
+ * "sidechain" (the trigger). The original filtergraph here had them
+ * backwards -- `[sc(voice)][0:a(music)]sidechaincompress` -- which
+ * compresses the VOICE using the MUSIC as the trigger, the exact opposite
+ * of the intended behavior. It shipped with no test and would have ducked
+ * the voice under the music in every real render. Confirmed with a direct
+ * measurement: music alone measured -22.05 LUFS; run through the (buggy)
+ * old graph the "ducked" output measured LOUDER (-7.54 LUFS, because the
+ * unducked voice was passing through as "main"); with the corrected input
+ * order below, the same music dropped to -39.24 LUFS while the sidechain
+ * trigger was active -- the actual intended ducking behavior.
  */
 import { runFfmpeg } from "../../lib/ffmpeg";
 
@@ -19,7 +34,7 @@ export async function duckMusicUnderVoice(
     "-i", musicWavPath,
     "-i", voiceWavPath,
     "-filter_complex",
-    `[1:a]asplit[sc][vox];[sc][0:a]sidechaincompress=threshold=${threshold}:ratio=${ratio}:attack=${attackMs}:release=${releaseMs}[duck];[duck][vox]amix=inputs=2:normalize=0[a]`,
+    `[1:a]asplit[sc][vox];[0:a][sc]sidechaincompress=threshold=${threshold}:ratio=${ratio}:attack=${attackMs}:release=${releaseMs}[duck];[duck][vox]amix=inputs=2:normalize=0[a]`,
     "-map", "[a]",
     outPath,
   ]);

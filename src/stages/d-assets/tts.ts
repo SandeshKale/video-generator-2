@@ -49,6 +49,9 @@
  * Voicebox's documented endpoint list, not a captured live response.
  */
 import type { z } from "zod";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import * as sdk from "microsoft-cognitiveservices-speech-sdk";
 import { WordSchema } from "../../edl/schema";
 import { alignWithWhisperX } from "../../lib/whisperx";
 
@@ -88,15 +91,57 @@ async function synthesizeWithVoicebox(text: string, voiceId?: string): Promise<V
   );
 }
 
-async function synthesizeWithAzure(_text: string, _voiceId?: string): Promise<VoiceSynthesisResult> {
+/** Azure's WordBoundary event reports audioOffset/duration in "ticks"
+ * (100-nanosecond units, confirmed against Microsoft's own SDK reference
+ * docs for SpeechSynthesisWordBoundaryEventArgs) -- 10,000,000 ticks/sec.
+ * Pulled out as a pure function so the conversion math has a unit test
+ * independent of a live Azure credential/network call. */
+export function ticksToSeconds(ticks: number): number {
+  return ticks / 10_000_000;
+}
+
+async function synthesizeWithAzure(text: string, voiceId?: string): Promise<VoiceSynthesisResult> {
   const key = process.env.AZURE_SPEECH_KEY;
   const region = process.env.AZURE_SPEECH_REGION;
   if (!key || !region) throw new Error("AZURE_SPEECH_KEY / AZURE_SPEECH_REGION not set");
-  throw new Error(
-    "TODO: Azure Speech SDK SpeechSynthesizer with a WordBoundary event handler -- AudioOffset " +
-      "(100-ns units, divide by 10,000 for ms) + WordOffset give native word-level timing directly, " +
-      "no grouping or forced-alignment step needed.",
-  );
+
+  const speechConfig = sdk.SpeechConfig.fromSubscription(key, region);
+  speechConfig.speechSynthesisVoiceName = voiceId ?? "en-US-AvaMultilingualNeural";
+  // Uncompressed PCM WAV straight from Azure -- avoids an extra lossy
+  // decode/re-encode hop before normalizeAudioToCbrWav() resamples it to
+  // the pipeline's 48kHz CBR spec. 24kHz is Azure's standard high-quality
+  // Riff PCM rate; the resample step handles the rest either way.
+  speechConfig.speechSynthesisOutputFormat = sdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm;
+
+  const audioPath = join(tmpdir(), `azure-tts-${Date.now()}-${Math.random().toString(36).slice(2)}.wav`);
+  const audioConfig = sdk.AudioConfig.fromAudioFileOutput(audioPath);
+  const synthesizer = new sdk.SpeechSynthesizer(speechConfig, audioConfig);
+
+  const words: Word[] = [];
+  synthesizer.wordBoundary = (_sender, event) => {
+    // Punctuation/sentence boundary events also fire on this same handler
+    // -- only WordBoundary events correspond to actual spoken words.
+    if (event.boundaryType !== sdk.SpeechSynthesisBoundaryType.Word) return;
+    const t0 = ticksToSeconds(event.audioOffset);
+    words.push({ t0, t1: t0 + ticksToSeconds(event.duration), w: event.text });
+  };
+
+  await new Promise<void>((resolve, reject) => {
+    synthesizer.speakTextAsync(
+      text,
+      (result) => {
+        synthesizer.close();
+        if (result.reason === sdk.ResultReason.SynthesizingAudioCompleted) resolve();
+        else reject(new Error(`Azure TTS did not complete: reason=${result.reason} ${result.errorDetails ?? ""}`));
+      },
+      (err) => {
+        synthesizer.close();
+        reject(new Error(`Azure TTS error: ${err}`));
+      },
+    );
+  });
+
+  return { audioPath, words };
 }
 
 async function synthesizeWithElevenLabs(_text: string, voiceId?: string): Promise<VoiceSynthesisResult> {
