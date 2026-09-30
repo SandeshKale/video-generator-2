@@ -25,13 +25,14 @@ bun run remotion:still src/stages/h-render/index.ts MasterVideo out/still.png --
 
 ## Status
 
-Weeks 1–4 of the `BUILD_PLAN.md` roadmap are done (63/63 tests pass, `bunx tsc --noEmit` is clean):
+Weeks 1–5 of the `BUILD_PLAN.md` roadmap are done (82/82 tests pass, `bunx tsc --noEmit` is clean):
 
 - **Week 1–2**: EDL schema, asset normalization CLI, Remotion concurrency benchmark, and a real 3-minute/5,400-frame render soak test — all verified against real ffmpeg/Remotion output, results recorded in `BUILD_PLAN.md` section 5.9.
 - **Week 3**: Azure TTS wired for real via the official Speech SDK (`VOICE_PROVIDER=azure` by default — see below), an SRT caption writer, Freesound search with license filtering, and ffmpeg sidechain ducking + loudness mastering. Testing the ducking code caught a real bug (main/sidechain inputs were swapped, so it was ducking the wrong signal) and testing the licensing filters caught another (a license-attribution check that silently returned the wrong answer for a plain Attribution license) — both fixed, both now covered by regression tests.
 - **Week 4**: music ledger loader (validates the JSON ledger, rejects duplicate track IDs / missing files / inconsistent attribution flags), Pexels + Pixabay search wired for real with Pixabay's required 24h cache actually enforced, a real perceptual-hash (aHash) implementation for B-roll dedup using ffmpeg (no external image-hashing dependency, tested against real decoded frames), and a Flux thumbnail pipeline wired against fal.ai's actual queue-based API (submit → poll → fetch), with the polling state machine unit-tested including a genuine timeout case.
+- **Week 5**: three real `GraphicScene` components — `StatCallout` (animated count-up), `LabeledDiagram` (staggered-reveal mechanism diagram), `KenBurnsStill` (pan/zoom on a normalized still) — built on tested pure-frame motion math (`h-render/motion/`), replacing the old placeholder dispatcher. Caught by actually running the render rather than trusting a typecheck: `Root.tsx` referencing its fixture image via Node's `pathToFileURL` broke Remotion's webpack bundle (`node:path` isn't resolvable in the browser bundle context) — fixed by moving to Remotion's `public/` + `staticFile()` convention. All three components visually verified via rendered stills.
 - Voice provider defaults to `azure` (~$0.15–0.20/video, no GPU needed) after directly measuring self-hosted Chatterbox at 3.72× realtime on this project's CPU-only hardware — see `BUILD_PLAN.md` section 5.4 for the numbers. `voicebox`/Chatterbox remains available but is GPU-only.
 - Live network calls to Azure, Freesound, Pexels, Pixabay, and fal.ai are **not** exercised end-to-end in this dev sandbox (no credentials here) — everything else (SDK types, request/response shapes confirmed against each provider's own docs, filter logic, SRT formatting, the ffmpeg filter graphs, the queue-polling state machine) is real and tested, not assumed.
 - Still open from Week 1: the YouTube API compliance audit application — needs a human on the Google Cloud console, not something this repo can automate.
 
-Everything past Week 4 is stubbed per stage, ready to build in the order `BUILD_PLAN.md` section 9 lays out.
+Everything past Week 5 is stubbed per stage, ready to build in the order `BUILD_PLAN.md` section 9 lays out.

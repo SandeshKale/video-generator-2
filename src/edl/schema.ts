@@ -87,6 +87,14 @@ export const VisualSchema = z.object({
   assetUri: z.string().optional(),
   fromSec: z.number(),
   toSec: z.number(),
+  /** Component-specific data (e.g. StatCallout's {from,to,label},
+   * LabeledDiagram's {nodes:[...]}, KenBurnsStill's {direction,endScale}).
+   * Non-breaking addition (optional, defaults to {}) -- each component
+   * under src/stages/h-render/components/ owns its own zod schema for
+   * what it expects here and fails loudly on a malformed shape rather
+   * than silently rendering garbage. See BUILD_PLAN.md section 2's
+   * graphic-first components. */
+  props: z.record(z.string(), z.unknown()).optional(),
 });
 
 /** 30fps is the pipeline-wide default -- see BUILD_PLAN.md section 3.1.

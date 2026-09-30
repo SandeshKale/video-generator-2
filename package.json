@@ -17,6 +17,7 @@
     "inngest:dev": "bunx inngest-cli@latest dev"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.129.0",
     "@remotion/cli": "4.0.529",
     "@remotion/renderer": "4.0.529",
     "@remotion/transitions": "4.0.529",
