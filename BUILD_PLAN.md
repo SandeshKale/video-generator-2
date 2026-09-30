@@ -102,11 +102,11 @@ Chunked generation (outline → hook → per-chapter → payoff → global consi
 ### 5.4 Voice (`d-assets/tts.ts` + `lib/whisperx.ts` + `e-normalize-mix/captions.ts`)
 Pluggable provider, `VOICE_PROVIDER` env var, three options behind one `synthesizeVoice()` call returning the same `{ audioPath, words }` shape regardless of which ran:
 
-- **`voicebox` (default, $0 marginal cost)** — self-hosted **Chatterbox** (Resemble AI, MIT) via **Voicebox** (`github.com/jamiepine/voicebox`, MIT, 56k★), REST API at `VOICEBOX_BASE_URL` (default `http://127.0.0.1:17493`). Resemble's own (self-reported, not independently verified here) blind-eval claim: 63.75% of evaluators preferred Chatterbox over ElevenLabs. Chatterbox has no confirmed native word-timestamp output, so every synthesis is run through `alignWithWhisperX()` (`src/lib/whisperx.ts`, a subprocess wrapper around the Python `whisperx` forced-alignment tool) rather than trusted to return usable alignment on its own. The real cost here isn't dollars, it's **operational**: you now own an inference server — a multi-GB model download, container uptime, and compute contention with the Remotion render step on the same box — none of which a hosted API requires. **Not yet run end-to-end**: this dev sandbox has no GPU and no provisioned Voicebox/WhisperX install, so the request/response shapes in `tts.ts`/`whisperx.ts` are built from each project's documented endpoints, not a captured live response — verify against a real running instance before trusting them.
-- **`azure` (fallback)** — native `WordBoundary` events (`AudioOffset`/`WordOffset`), no alignment pass needed at all. Switch to this if Voicebox/Chatterbox's self-hosted reliability or quality doesn't hold up in practice — it needs no self-hosting and is still far cheaper than ElevenLabs (~$0.15–0.20 for a 10-minute script vs. ElevenLabs' ~$0.45–0.90).
+- **`azure` (default)** — native `WordBoundary` events (`AudioOffset`/`WordOffset`), no alignment pass needed at all, no self-hosting, ~$0.15–0.20 for a 10-minute script — the practical default absent a GPU render box.
+- **`voicebox` (GPU-only)** — self-hosted **Chatterbox** (Resemble AI, MIT) via **Voicebox** (`github.com/jamiepine/voicebox`, MIT, 56k★), REST API at `VOICEBOX_BASE_URL` (default `http://127.0.0.1:17493`). **Measured directly, 2026-09-30**: installed the underlying `chatterbox-tts` PyPI package (Voicebox is a REST wrapper around the same library, so the finding transfers) in a clean venv on this project's 4 vCPU / 15GB, GPU-less dev sandbox — torch 2.14+cpu, no special tuning. Result: model load ~20s (one-time per server lifetime), then **19.5s of CPU time to generate 5.24s of audio — a 3.72× realtime factor**. Extrapolated to a 10-minute (600s) script, that's **~37 minutes of CPU compute for voice synthesis alone**, directly competing with the Remotion render step on the same box. Resemble's marketed "~200ms latency" is a real number but a GPU, short-utterance one — it says nothing about CPU throughput on a full script, which is what actually matters for this pipeline. Disk footprint: ~1.8GB venv + ~3GB downloaded model weights. One real integration snag hit along the way: current `torchaudio.save()` requires the optional `torchcodec` package; save via `soundfile` directly instead. Chatterbox still has no confirmed native word-timestamp output, so every synthesis (once you do have a GPU box) still runs through `alignWithWhisperX()` (`src/lib/whisperx.ts`). **Verdict: only set `VOICE_PROVIDER=voicebox` on a render box that actually has a GPU** — on CPU alone it is strictly worse than `azure` on speed, reliability, and ops burden, for a savings of ~$0.15–0.20/video. The Voicebox HTTP layer itself (as opposed to the underlying library, which was measured above) is still unverified end-to-end — confirm the exact `/generate` request/response shape against a real running instance before trusting `tts.ts`'s TODO string.
 - **`elevenlabs` (optional upgrade, ~$0.45–0.90/video)** — `eleven_v3`'s inline audio-tag expressiveness (`[whispers]`, `[excited]`, etc). Alignment is **character-level only**; `groupCharsIntoWords()` (`e-normalize-mix/captions.ts`) groups it and drops the `[audio-tag]` characters themselves out of the caption stream.
 
-Whichever provider ran, assert `sum(word durations) ≈ audio duration` within 250ms (`assertCaptionCoverage`) before trusting the words for captions — on failure, fall back to (or, for `voicebox`, already ran) a WhisperX pass rather than shipping drifting captions. Always CBR WAV (`normalizeAudioToCbrWav`) immediately after synthesis, for every provider — VBR MP3 into Remotion is a documented audio-drift failure mode.
+Whichever provider ran, assert `sum(word durations) ≈ audio duration` within 250ms (`assertCaptionCoverage`) before trusting the words for captions — on failure, fall back to (or, for `voicebox`, already ran) a WhisperX pass rather than shipping drifting captions. Always CBR WAV (`normalizeAudioToCbrWav`) immediately after synthesis, for every provider — VBR MP3 into Remotion is a documented audio-drift failure mode; note Chatterbox itself outputs 24kHz, so this resample is load-bearing for that provider, not a formality.
 
 ### 5.5 SFX (`d-assets/sfx.ts`)
 Freesound's current unified `GET /apiv2/search/` (the `/search/text/` path is deprecated, Nov 2025). `isFreesoundLicenseSafe()` hard-excludes CC-BY-NC before download — monetized YouTube is commercial use. Prefer the `CURATED_ALLOWLIST` per category over live keyword search; generic-keyword result quality is documented as inconsistent.
@@ -152,7 +152,7 @@ v2 priority, not a launch blocker. Pull retention curve 48–72h post-publish, s
 |---|---|---|
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | script, packaging concepts, provenance drafting | per-token, negligible per video |
 | `JEV_API_KEY` | `src/lib/jev.ts` — Score/Choice/Noul gates only | $0.042/M input tokens |
-| `VOICE_PROVIDER` / `VOICEBOX_BASE_URL` | `d-assets/tts.ts` — primary voice, self-hosted Chatterbox via Voicebox | $0 (your own compute) |
+| `VOICE_PROVIDER` / `VOICEBOX_BASE_URL` | `d-assets/tts.ts` — GPU-only alt voice, self-hosted Chatterbox via Voicebox (measured ~3.7× slower than realtime on CPU — see §5.4, don't use without a GPU) | $0 API cost, real cost is compute time/ops |
 | `AZURE_SPEECH_KEY`/`REGION` | TTS fallback | ~$16–22/1M chars |
 | `ELEVENLABS_API_KEY` | TTS optional upgrade (`eleven_v3` audio tags) | ~$0.05–0.10/1k chars |
 | `FREESOUND_API_KEY` | `d-assets/sfx.ts` | free, rate-limited |
@@ -172,8 +172,8 @@ v2 priority, not a launch blocker. Pull retention curve 48–72h post-publish, s
 | Item | Estimate |
 |---|---|
 | LLM script + packaging | ~$0.02–0.08 |
-| Voice — `voicebox` (default) | $0 marginal (self-hosted Chatterbox; real cost is the inference server's compute/ops, not a per-video dollar figure) |
-| Voice — `azure` (fallback) | ~$0.15–0.20 |
+| Voice — `azure` (default) | ~$0.15–0.20 |
+| Voice — `voicebox` (GPU-only alt) | $0 API cost, but **measured** ~37min CPU compute/10min-video if no GPU (§5.4) — not recommended without one |
 | Voice — `elevenlabs` (optional upgrade) | ~$0.45–0.90 |
 | Flux thumbnails + a few stills | ~$0.10–0.40 |
 | Pexels/Pixabay/Freesound | $0 |
@@ -181,8 +181,9 @@ v2 priority, not a launch blocker. Pull retention curve 48–72h post-publish, s
 | Jev gates | <$0.01 |
 | Remotion license | $0 (solo/≤3) |
 | Compute | amortized electricity/box |
-| **Total (default `voicebox` provider)** | **~$0.15–0.50/video** |
+| **Total (default `azure` provider)** | **~$0.30–0.70/video** |
 | **Total (with `elevenlabs` upgrade)** | **~$0.60–1.50/video** |
+| **Total (`voicebox`, GPU box only)** | **~$0.15–0.50/video + GPU compute time** |
 
 Do not plan a volume target that only makes sense to "amortize Remotion" — that pattern (30 near-identical videos/month against one template) is exactly what the inauthentic-content policy targets.
 
@@ -209,7 +210,7 @@ Do not plan a volume target that only makes sense to "amortize Remotion" — tha
 |---|---|
 | 1 | `bun install`, EDL schema + contract tests (**done**), Remotion hello-world render (**done**), **submit the YouTube API compliance audit application** (has no SLA — start it now; not automatable, needs a human on the Google Cloud console — still open) |
 | 2 | **Done.** Normalization CLI (`bun run normalize -- <video\|audio> <in> <out>`, `src/stages/e-normalize-mix/normalize.ts`) + a real contract test against ffmpeg-generated fixtures (`test/normalize.contract.test.ts`, verifies actual ffprobe output, not just that the code compiles) + `remotion:benchmark` run on real hardware + a real 3-minute/5,400-frame render soak test, both with measured results written into section 5.9 above |
-| 3 | Voicebox/Chatterbox self-hosting (Docker Compose) + WhisperX forced alignment + Azure fallback + SRT writer + Freesound allowlist + sidechain duck + loudnorm |
+| 3 | Azure TTS integration (default) + SRT writer + Freesound allowlist + sidechain duck + loudnorm. Voicebox/Chatterbox self-hosting + WhisperX forced alignment only if the render box has a GPU — CPU-only Chatterbox was benchmarked (see §5.4) at 3.72× realtime, ~37min compute per 10-min video, not worth building against on CPU alone |
 | 4 | Music ledger (Audio Library) + Pexels/Pixabay cache + hash dedupe + Flux thumbnail pipeline |
 | 5 | 2–3 real `GraphicScene` components (replace the placeholder) + Ken Burns on normalized stills |
 | 6 | Chunked script generator + provenance lint + Jev cue/packaging gates |

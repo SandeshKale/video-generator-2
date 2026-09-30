@@ -1,21 +1,34 @@
 /**
  * BUILD_PLAN.md section 5.4. Voice provider is pluggable via the
- * VOICE_PROVIDER env var, default "voicebox":
+ * VOICE_PROVIDER env var, default "azure" (changed from "voicebox" after
+ * measuring real Chatterbox CPU performance -- see the benchmark below):
  *
- * 1. voicebox (PRIMARY, $0 marginal cost) -- self-hosted Chatterbox
- *    (Resemble AI, MIT license) via Voicebox (github.com/jamiepine/
- *    voicebox, MIT, 56k stars), REST API at VOICEBOX_BASE_URL (default
- *    http://127.0.0.1:17493). Resemble's own (self-reported, not
- *    independently verified here) blind-eval claim: 63.75% of evaluators
- *    preferred Chatterbox over ElevenLabs. Chatterbox has no confirmed
- *    native word-timestamp output -- every Voicebox synthesis is run
- *    through alignWithWhisperX() (src/lib/whisperx.ts) rather than trusted
- *    to return usable alignment on its own. Trades API cost for owning an
- *    inference server (model downloads, uptime, compute contention with
- *    the Remotion render step) -- a real operational cost, not a free lunch.
- * 2. azure (FALLBACK) -- native WordBoundary events, no alignment pass
- *    needed. Switch to this if Voicebox/Chatterbox's self-hosted
- *    reliability or quality doesn't hold up in practice.
+ * 1. azure (DEFAULT) -- native WordBoundary events, no alignment pass
+ *    needed, no self-hosting, ~$0.15-0.20 for a 10-minute script. The
+ *    practical default absent a GPU render box.
+ * 2. voicebox (GPU-ONLY, $0 marginal cost if you have a GPU) -- self-hosted
+ *    Chatterbox (Resemble AI, MIT license) via Voicebox (github.com/
+ *    jamiepine/voicebox, MIT, 56k stars), REST API at VOICEBOX_BASE_URL
+ *    (default http://127.0.0.1:17493). **Measured directly** (2026-09-30,
+ *    installing the underlying `chatterbox-tts` PyPI package straight from
+ *    a clean venv, torch 2.14+cpu, 4 vCPU / 15GB sandbox, no GPU -- Voicebox
+ *    is just a REST wrapper around this same library, so the finding
+ *    transfers): model load ~20s (one-time per server lifetime), then
+ *    **19.5s of CPU time to generate 5.24s of audio -- a 3.72x realtime
+ *    factor**. Extrapolated to a 10-minute (600s) video script, that's
+ *    **~37 minutes of CPU compute just for voice synthesis**, competing
+ *    with the Remotion render step on the same box. Resemble's own "~200ms
+ *    latency" marketing claim is real but is a GPU, short-utterance latency
+ *    figure -- it says nothing about CPU throughput on a long script, which
+ *    is the number that actually matters here. Disk footprint: ~1.8GB venv
+ *    + ~3GB downloaded model weights (~4.8GB total). Also hit one real
+ *    integration snag: current `torchaudio.save()` requires the optional
+ *    `torchcodec` package; saving via `soundfile` directly instead works
+ *    and avoids that dependency. Chatterbox has no confirmed native
+ *    word-timestamp output either way -- every synthesis is run through
+ *    `alignWithWhisperX()` (`src/lib/whisperx.ts`). **Only use this
+ *    provider if the render box actually has a GPU** -- on CPU it is
+ *    strictly worse than `azure` on every axis except dollar cost.
  * 3. elevenlabs (OPTIONAL UPGRADE, ~$0.45-0.90/video) -- eleven_v3's
  *    inline audio-tag expressiveness ([whispers], [excited], etc).
  *    Character-level alignment only, grouped via
@@ -25,15 +38,15 @@
  * so nothing downstream (captions, EDL binding) needs to know or care
  * which one ran. Always export/transcode the result to 48kHz 16-bit PCM
  * WAV (CBR) immediately -- never hand Remotion a VBR MP3 (see
- * normalizeAudioToCbrWav, src/stages/e-normalize-mix/normalize.ts).
+ * normalizeAudioToCbrWav, src/stages/e-normalize-mix/normalize.ts); note
+ * Chatterbox itself outputs 24kHz, so this resample step is not optional
+ * for that provider the way it might look like for others.
  *
- * NOT YET RUN END TO END: this needs a running Voicebox server with the
- * Chatterbox model downloaded, which this dev sandbox doesn't have
- * provisioned (no GPU, no multi-GB model download path). Provision it on
- * the actual render box and verify the /generate request/response shape
- * against a real instance before trusting the TODO strings below -- they
- * are built from Voicebox's documented endpoint list, not a captured
- * live response.
+ * The Voicebox REST call itself (as opposed to the underlying Chatterbox
+ * library, which WAS measured above) is still NOT run end to end -- verify
+ * the exact /generate request/response shape against a real running
+ * instance before trusting the TODO string below; it's built from
+ * Voicebox's documented endpoint list, not a captured live response.
  */
 import type { z } from "zod";
 import { WordSchema } from "../../edl/schema";
@@ -45,7 +58,7 @@ export type VoiceSynthesisResult = { audioPath: string; words: Word[] };
 export type VoiceProviderName = "voicebox" | "azure" | "elevenlabs";
 
 export function getVoiceProvider(): VoiceProviderName {
-  const p = (process.env.VOICE_PROVIDER ?? "voicebox").toLowerCase();
+  const p = (process.env.VOICE_PROVIDER ?? "azure").toLowerCase();
   if (p !== "voicebox" && p !== "azure" && p !== "elevenlabs") {
     throw new Error(`Unknown VOICE_PROVIDER "${p}" -- must be one of: voicebox, azure, elevenlabs`);
   }
