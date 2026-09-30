@@ -75,7 +75,10 @@ export async function callJev<Q extends Record<string, JevQuestion>>(
 }
 
 /** Convenience: the packaging gate from BUILD_PLAN.md section 5.2 --
- * score N title/thumbnail concepts in one parallel call. */
+ * score N title/thumbnail concepts in one parallel call. NOTE: the
+ * returned `score` is on a 0-(criteria.length-1) scale (0-4 here, for the
+ * 5-item poor/weak/adequate/strong/excellent list), not 0-10 -- confirmed
+ * by a live call. See the dated comment on packaging.ts's SCORE_THRESHOLD. */
 export async function scorePackagingConcepts(
   concepts: { title: string; thumbnailConcept: string }[],
 ): Promise<Record<number, { score: number; confidence: number }>> {
